@@ -9,16 +9,19 @@
              [query-processor-test :refer [rows rows+column-names]]
              [timeseries-query-processor-test :as timeseries-qp-test]
              [util :as u]]
-            metabase.driver.druid
+            [metabase.driver.druid :as druid]
             [metabase.models
              [field :refer [Field]]
              [metric :refer [Metric]]
              [table :refer [Table]]]
             [metabase.query-processor.middleware.expand :as ql]
+            [metabase.query-processor-test.query-cancellation-test :as cancel-test]
             [metabase.test
              [data :as data]
              [util :as tu]]
-            [metabase.test.data.datasets :as datasets :refer [expect-with-engine]]
+            [metabase.test.data
+             [dataset-definitions :as defs]
+             [datasets :as datasets :refer [expect-with-engine]]]
             [toucan.util.test :as tt])
   (:import metabase.driver.druid.DruidDriver))
 
@@ -332,3 +335,28 @@
       (driver/can-connect-with-details? engine details :rethrow-exceptions))
        (catch Exception e
          (.getMessage e))))
+
+;; Query cancellation test
+(datasets/expect-with-engine :druid
+  [false false true false true true]
+  (data/with-db (data/get-or-create-database! defs/test-data)
+    (let [called-cancel?             (promise)
+          called-query?              (promise)
+          pause-query                (promise)
+          before-query-called-cancel (realized? called-cancel?)
+          before-query-called-query  (realized? called-query?)
+          query-future               (future
+                                       (with-redefs [druid/do-query (fn [details query] (deliver called-query? true) @pause-query)
+                                                     druid/DELETE   (fn [url] (deliver called-cancel? true))]
+                                         (data/run-query checkins
+                                           (ql/aggregation (ql/count)))))]
+      [before-query-called-cancel
+       before-query-called-query
+       (deref called-query? 120000 ::query-never-called)
+       (realized? called-cancel?)
+       (do
+         (future-cancel query-future)
+         (deref called-cancel? 120000 ::cancel-never-called))
+       (do
+         (deliver pause-query true)
+         true)])))

@@ -1,14 +1,18 @@
 (ns metabase.driver.presto-test
-  (:require [expectations :refer [expect]]
+  (:require [clj-http.client :as http]
+            [expectations :refer [expect]]
             [metabase.driver :as driver]
             [metabase.driver.presto :as presto]
             [metabase.models
              [field :refer [Field]]
              [table :as table :refer [Table]]]
+            [metabase.query-processor.middleware.expand :as ql]
             [metabase.test
              [data :as data]
              [util :as tu]]
-            [metabase.test.data.datasets :as datasets]
+            [metabase.test.data
+             [dataset-definitions :as defs]
+             [datasets :as datasets :refer [expect-with-engine]]]
             [toucan.db :as db])
   (:import metabase.driver.presto.PrestoDriver))
 
@@ -152,3 +156,28 @@
 (datasets/expect-with-engine :presto
   "UTC"
   (tu/db-timezone-id))
+
+;; Query cancellation test
+(datasets/expect-with-engine :presto
+  [false false true false true true]
+  (data/with-db (data/get-or-create-database! defs/test-data)
+    (let [called-cancel?             (promise)
+          called-query?              (promise)
+          pause-query                (promise)
+          before-query-called-cancel (realized? called-cancel?)
+          before-query-called-query  (realized? called-query?)
+          query-future               (future
+                                       (with-redefs [presto/fetch-presto-results! (fn [_ _ _] (deliver called-query? true) @pause-query)
+                                                     http/delete                  (fn [_ _] (deliver called-cancel? true))]
+                                         (data/run-query checkins
+                                           (ql/aggregation (ql/count)))))]
+      [before-query-called-cancel
+       before-query-called-query
+       (deref called-query? 120000 ::query-never-called)
+       (realized? called-cancel?)
+       (do
+         (future-cancel query-future)
+         (deref called-cancel? 120000 ::cancel-never-called))
+       (do
+         (deliver pause-query true)
+         true)])))
