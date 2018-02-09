@@ -457,9 +457,7 @@
 (u/strict-extend BigQueryDriver
   sql/ISQLDriver
   (merge (sql/ISQLDriverDefaultsMixin)
-         {
-;;          :apply-aggregation         apply-aggregation
-          :apply-breakout            apply-breakout
+         {:apply-breakout            apply-breakout
           :apply-join-tables         (u/drop-first-arg apply-join-tables)
           :apply-order-by            apply-order-by
           ;; these two are actually not applicable since we don't use JDBC
